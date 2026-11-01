@@ -9,7 +9,7 @@ import pytest
 
 from sonata.archive import export_collection
 from sonata.database import Database
-from sonata.engine import Engine, download_command
+from sonata.engine import Engine, download_command, media_identity
 from sonata.models import (
     DownloadOptions,
     format_selector,
@@ -177,3 +177,16 @@ def test_database_connections_close_at_context_exit(db):
         connection.execute("SELECT 1")
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def test_generic_media_ids_are_scoped_to_the_source_url():
+    info = {"extractor_key": "Generic", "id": "video"}
+    first = media_identity(info, "https://one.example/video.mp4")
+    second = media_identity(info, "https://two.example/video.mp4")
+    assert first[0] != second[0]
+    assert first[1] and first[1] != second[1]
+    assert first == media_identity(info, "https://one.example/video.mp4#t=2")
+    assert media_identity({"extractor_key": "Youtube", "id": "test"}, "https://youtu.be/test") == (
+        "youtube:test",
+        "",
+    )

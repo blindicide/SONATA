@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -62,7 +63,18 @@ def base_command(paths: AppPaths) -> list[str]:
     ]
 
 
-def download_command(paths: AppPaths, url: str, options: DownloadOptions) -> list[str]:
+def media_identity(info: dict, url: str) -> tuple[str, str]:
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "generic").lower()
+    if extractor == "generic":
+        # Generic IDs are often just a basename, shared by unrelated servers.
+        digest = hashlib.sha256(url.partition("#")[0].encode("utf-8")).hexdigest()
+        return f"generic:{digest}", digest[:12]
+    return f"{extractor}:{info.get('id') or url}", ""
+
+
+def download_command(
+    paths: AppPaths, url: str, options: DownloadOptions, filename_tag: str = ""
+) -> list[str]:
     options.validate()
     command = base_command(paths) + [
         "--no-playlist",
@@ -85,7 +97,7 @@ def download_command(paths: AppPaths, url: str, options: DownloadOptions) -> lis
         "--paths",
         str(options.folder),
         "--output",
-        options.template,
+        options.template.replace("%(ext)s", f"{filename_tag}.%(ext)s") if filename_tag else options.template,
         "--format",
         format_selector(options),
     ]
@@ -245,7 +257,7 @@ class Engine:
                     raise ValueError("The playlist contains no downloadable entries.")
                 self.db.update(job_id, state="expanded", progress=100, error=f"{count} entries")
                 return
-            media_key = f"{str(info.get('extractor_key') or info.get('extractor') or 'generic').lower()}:{info.get('id', job['url'])}"
+            media_key, filename_tag = media_identity(info, job["url"])
             if not self.db.claim(media_key, job_id):
                 self.db.update(
                     job_id, state="skipped", error="Already in the library or another active download."
@@ -275,7 +287,9 @@ class Engine:
                 else:
                     self.log(job_id, line)
 
-            self._stream(job_id, download_command(self.paths, job["url"], options), progress_line)
+            self._stream(
+                job_id, download_command(self.paths, job["url"], options, filename_tag), progress_line
+            )
             self._check(job_id)
             # Include written metadata, subtitles and thumbnails beside the final media.
             sidecars = []

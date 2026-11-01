@@ -100,6 +100,8 @@ See [BUILDING](docs/BUILDING.md), [architecture](docs/ARCHITECTURE.md), and
   FFmpeg error in the row details and Activity tab. Choose MKV for broad codec compatibility.
 - Duplicate detection is global to a library, by extractor/media ID. It intentionally skips a second format of the
   same media while its registered files exist. Missing registered files allow a new download.
+  Generic/direct media sources use a URL hash, also appended to the filename, to distinguish unrelated servers
+  with the same media basename.
 - Public, accessible media is the intended workflow. No sign-in, DRM bypass, cookie management, live recording,
   or scheduled downloads are provided. Some services require credentials and cannot work anonymously.
 - A duplicate already reserved by another worker is skipped; retry that row if the first worker later fails.
