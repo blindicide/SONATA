@@ -1,0 +1,61 @@
+name: Publish Overture release
+on:
+  push:
+    branches: ['release/v0.1.0']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: sonata-overture-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify tested application revision
+        run: |
+          gh run view 41316533412 --json conclusion,headSha > build-run.json
+          python -c "import json; r=json.load(open('build-run.json')); assert r['conclusion']=='success'; assert r['headSha']=='8181345f78359c56e2aa86deace76311484d892d'"
+          git diff --exit-code 8181345f78359c56e2aa86deace76311484d892d HEAD -- src pyproject.toml tools-lock.json packaging/sonata.spec packaging/installer.iss
+      - uses: actions/download-artifact@v4
+        with:
+          name: SONATA-Windows-x64
+          path: release-input/windows
+          run-id: 41316533412
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: SONATA-Linux-x64
+          path: release-input/linux
+          run-id: 41316533412
+          github-token: ${{ github.token }}
+      - name: Preserve pinned FFmpeg dependency sources
+        uses: actions/download-artifact@v4
+        with:
+          name: download-cache
+          path: upstream-source-cache
+          repository: BtbN/FFmpeg-Builds
+          run-id: 41199749965
+          github-token: ${{ github.token }}
+      - run: python -m pip install pyinstaller==6.22.3
+      - run: python scripts/prepare_release.py
+      - name: Create draft, attach assets, then publish
+        run: |
+          if gh release view v0.1.0 --json isDraft > existing-release.json 2>/dev/null; then
+            python -c "import json; assert json.load(open('existing-release.json'))['isDraft'], 'Release is already published; refusing to replace it'"
+          else
+            gh release create v0.1.0 --target "$GITHUB_SHA" --title "SONATA v0.1.0 — Overture" --notes-file release-notes/0.1.0.md --draft
+          fi
+          gh release upload v0.1.0 release-assets/* --clobber
+          gh release edit v0.1.0 --draft=false --latest --notes-file release-notes/0.1.0.md

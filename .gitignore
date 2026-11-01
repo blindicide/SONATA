@@ -13,4 +13,9 @@ vendor/
 *.db-wal
 *.part
 *.log
+release-assets/
+release-input/
+upstream-source-cache/
+build-run.json
+existing-release.json
 !docs/*.log

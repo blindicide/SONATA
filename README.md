@@ -26,8 +26,9 @@ Rectangular controls. Real menus. A proper table. No accounts, telemetry, or clo
 
 ## Run a packaged build
 
-Download a package from the repository's **Actions → Test and build → Artifacts**.
-Artifacts are produced only after tests and the platform build pass.
+Download a package from [GitHub Releases](https://github.com/blindicide/SONATA/releases).
+Release packages come from the verified Windows/Linux CI build. Development builds
+are also available under **Actions → Test and build → Artifacts**.
 
 **Windows portable:** extract the entire ZIP and launch `SONATA.exe`. Keep `_internal`
 beside the executable. `portable.txt` stores the library/settings in `.sonata` beside

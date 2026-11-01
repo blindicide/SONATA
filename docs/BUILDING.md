@@ -30,9 +30,13 @@ also apply. A release publisher must provide the complete corresponding source a
 materials required for those exact binaries, including enabled libraries. The BtbN source
 repository/build scripts alone are not a substitute for all corresponding dependency sources.
 
-CI produces build artifacts for verification. Public binary release publication is a separate
-step: assemble the corresponding-source bundle and verify notices before attaching binaries
-to a public release. This repository does not automatically publish GitHub Releases.
+CI produces build artifacts for verification. `publish-release.yml` publishes the Overture
+release from its verified build, checks package hashes, preserves pinned upstream source
+snapshots and the FFmpeg dependency source cache, and attaches notices and provenance.
+It creates a draft, uploads the assets, and publishes only after those steps succeed.
+The workflow runs on the `release/v0.1.0` branch or by explicit manual dispatch. It refuses
+to replace an already-published release. Review source and notice requirements again when
+changing runtime versions; the Overture manifest is specific to its pinned dependency set.
 
 Qt libraries are kept as separate files for replacement. The Python/Qt dependency versions
 are pinned in `pyproject.toml`; runtime tool versions and checksums are in `tools-lock.json`.
