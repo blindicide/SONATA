@@ -168,3 +168,12 @@ def test_history_search_treats_wildcards_literally(db, options):
     completed_record(db, options)
     assert len(db.history("Тест")) == 1
     assert db.history("%") == []
+
+
+def test_database_connections_close_at_context_exit(db):
+    import sqlite3
+
+    with db.connect() as connection:
+        connection.execute("SELECT 1")
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")

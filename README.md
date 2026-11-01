@@ -6,6 +6,10 @@ A standalone multimedia downloader and local archival manager for **Windows 10/1
 and Linux (x86-64)**. Python, PySide6, yt-dlp, FFmpeg, and a conventional desktop interface.
 Rectangular controls. Real menus. A proper table. No accounts, telemetry, or cloud backend.
 
+![SONATA desktop interface](docs/screenshots/sonata-light.png)
+
+[Dark theme](docs/screenshots/sonata-dark.png) · [Русский интерфейс](docs/screenshots/sonata-russian.png)
+
 ## Features
 
 - Video, audio, playlists, and channels through yt-dlp's supported extractors.

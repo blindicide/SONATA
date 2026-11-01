@@ -133,6 +133,8 @@ def install(target):
         os.chmod(path, 0o755)
     shutil.copy2(ROOT / "THIRD_PARTY.md", licenses / "THIRD_PARTY.md")
     shutil.copy2(ROOT / "tools-lock.json", licenses / "tools-lock.json")
+    if (ROOT / "notices").is_dir():
+        shutil.copytree(ROOT / "notices", licenses, dirs_exist_ok=True)
     print("Bundled tools verified.", flush=True)
 
 

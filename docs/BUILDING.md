@@ -6,6 +6,7 @@ downloads, FFmpeg remuxing/audio extraction, duplicate detection, and archive ex
 
 1. Install `.[dev]` in an isolated environment.
 2. Run `python scripts/fetch_tools.py` to download exact locked runtime assets.
+   Then run `python scripts/collect_licenses.py` to collect installed-runtime notices.
 3. Run Ruff and pytest. Enable `SONATA_INTEGRATION=1` for real tool tests.
 4. Run `python -m PyInstaller --noconfirm packaging/sonata.spec`.
 5. Run `python scripts/package.py` for portable ZIP/TAR.GZ and a Linux DEB.

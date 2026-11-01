@@ -37,13 +37,20 @@ def main():
         with tarfile.open(target, "w:gz") as archive:
             archive.add(folder, arcname="SONATA")
         package_deb(folder, releases)
-    checksums = {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in releases.iterdir()
-        if path.is_file() and path.suffix != ".json"
-    }
-    (releases / "SHA256SUMS.json").write_text(json.dumps(checksums, indent=2) + "\n", encoding="utf-8")
+    write_checksums(releases)
     print(target)
+
+
+def write_checksums(releases):
+    checksums = {}
+    for path in sorted(releases.iterdir()):
+        if path.is_file() and path.name not in ("SHA256SUMS", "SHA256SUMS.json"):
+            with path.open("rb") as stream:
+                checksums[path.name] = hashlib.file_digest(stream, "sha256").hexdigest()
+    (releases / "SHA256SUMS.json").write_text(json.dumps(checksums, indent=2) + "\n", encoding="utf-8")
+    (releases / "SHA256SUMS").write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in checksums.items()), encoding="utf-8"
+    )
 
 
 def package_deb(folder, releases):
@@ -81,4 +88,7 @@ def package_deb(folder, releases):
 
 
 if __name__ == "__main__":
-    main()
+    if "--checksums" in sys.argv:
+        write_checksums(ROOT / "dist" / "packages")
+    else:
+        main()

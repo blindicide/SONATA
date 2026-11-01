@@ -18,5 +18,5 @@ a = Analysis(
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="SONATA", debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
-          contents_directory="_internal")
+          contents_directory="_internal", icon=str(root / "assets" / "sonata.ico"))
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="SONATA")

@@ -36,7 +36,12 @@ def update_downloader(paths: AppPaths, progress=lambda *_: None) -> str:
     with request(assets["SHA2-256SUMS"]) as response:
         sums = response.read(1024 * 1024).decode("utf-8")
     expected = next(
-        (line.split()[0] for line in sums.splitlines() if line.split()[-1].lstrip("*") == name), None
+        (
+            parts[0]
+            for line in sums.splitlines()
+            if len(parts := line.split()) >= 2 and parts[-1].lstrip("*") == name
+        ),
+        None,
     )
     if not expected or len(expected) != 64:
         raise RuntimeError("The official release has no matching SHA-256 checksum.")

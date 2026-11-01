@@ -15,8 +15,8 @@ licensed components. Their licenses continue to apply; this file does not relice
 `tools-lock.json` records each bundled tool's release, exact source URL and SHA-256.
 Builds copy upstream license files from runtime archives into `vendor/licenses`.
 FFmpeg build scripts and source retrieval instructions are at the exact upstream
-release linked by the lock. SONATA release automation also preserves FFmpeg's
-source archive alongside binary packages, when supplied by the upstream release.
+release linked by the lock. See `docs/BUILDING.md` for source-bundle requirements
+before publishing binary releases.
 
 Qt libraries are distributed as separate files in the application directory.
 Users may replace those libraries with ABI-compatible versions. Qt source and
