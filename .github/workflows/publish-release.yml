@@ -50,6 +50,29 @@ jobs:
           github-token: ${{ github.token }}
       - run: python -m pip install pyinstaller==6.22.3
       - run: python scripts/prepare_release.py
+      - name: Separate developer materials from application downloads
+        run: |
+          mkdir developer-materials
+          python - <<'PY'
+          import hashlib, shutil
+          from pathlib import Path
+          root = Path('release-assets')
+          keep = {'SONATA-0.1.0-windows-x64-setup.exe', 'SONATA-0.1.0-windows-x64-portable.zip', 'SONATA-0.1.0-linux-x86_64.tar.gz', 'sonata-archiver_0.1.0_amd64.deb'}
+          for path in root.iterdir():
+              if path.name not in keep:
+                  shutil.move(str(path), Path('developer-materials') / path.name)
+          sums = []
+          for path in sorted(root.iterdir()):
+              with path.open('rb') as stream:
+                  sums.append(hashlib.file_digest(stream, 'sha256').hexdigest() + '  ' + path.name + '\n')
+          (root / 'SHA256SUMS').write_text(''.join(sums))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SONATA-0.1.0-developer-materials
+          path: developer-materials/*
+          retention-days: 90
+          compression-level: 0
       - name: Create draft, attach assets, then publish
         run: |
           if gh release view v0.1.0 --json isDraft > existing-release.json 2>/dev/null; then

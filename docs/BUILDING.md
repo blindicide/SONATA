@@ -32,8 +32,10 @@ repository/build scripts alone are not a substitute for all corresponding depend
 
 CI produces build artifacts for verification. `publish-release.yml` publishes the Overture
 release from its verified build, checks package hashes, preserves pinned upstream source
-snapshots and the FFmpeg dependency source cache, and attaches notices and provenance.
-It creates a draft, uploads the assets, and publishes only after those steps succeed.
+snapshots and the FFmpeg dependency source cache, and archives developer materials
+as a separate Actions artifact. The public Release contains only the four application
+packages and their SHA256SUMS file. The workflow creates a draft, uploads those five
+assets, and publishes only after those steps succeed.
 The workflow runs on the `release/v0.1.0` branch or by explicit manual dispatch. It refuses
 to replace an already-published release. Review source and notice requirements again when
 changing runtime versions; the Overture manifest is specific to its pinned dependency set.

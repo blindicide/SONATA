@@ -1,0 +1,75 @@
+name: Tidy Overture downloads
+on:
+  push:
+    paths: ['.github/workflows/tidy-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sonata-overture-release
+  cancel-in-progress: false
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snapshot release metadata
+        run: gh api "repos/$GH_REPO/releases/tags/v0.1.0" > release-before.json
+      - name: Preserve developer materials outside Releases
+        run: |
+          mkdir release-cleanup-backup
+          gh release download v0.1.0 --dir release-cleanup-backup --pattern 'Source-*' --pattern 'SOURCE-*' --pattern 'LICENSE.txt' --pattern 'THIRD_PARTY.md' --pattern 'tools-lock.json' --pattern 'yt-dlp-THIRD-PARTY-LICENSES.txt' --pattern 'SHA256SUMS'
+          cp release-before.json release-cleanup-backup/RELEASE-ASSETS.json
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          release = json.loads(Path('release-before.json').read_text())
+          backup = Path('release-cleanup-backup')
+          keep = {'SONATA-0.1.0-windows-x64-setup.exe', 'SONATA-0.1.0-windows-x64-portable.zip', 'SONATA-0.1.0-linux-x86_64.tar.gz', 'sonata-archiver_0.1.0_amd64.deb', 'SHA256SUMS'}
+          assert all((backup / asset['name']).is_file() for asset in release['assets'] if asset['name'] not in keep), 'A developer asset was not backed up'
+          for path in backup.iterdir():
+              if path.name == 'RELEASE-ASSETS.json':
+                  continue
+              asset = next(a for a in release['assets'] if a['name'] == path.name)
+              with path.open('rb') as stream:
+                  actual = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+              assert actual == asset['digest'], path.name
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SONATA-0.1.0-developer-materials
+          path: release-cleanup-backup/*
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error
+      - name: Keep application downloads and replace the checksum list
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          keep = {
+              'SONATA-0.1.0-windows-x64-setup.exe',
+              'SONATA-0.1.0-windows-x64-portable.zip',
+              'SONATA-0.1.0-linux-x86_64.tar.gz',
+              'sonata-archiver_0.1.0_amd64.deb',
+          }
+          release = json.loads(Path('release-before.json').read_text())
+          assert release['tag_name'] == 'v0.1.0' and not release['draft']
+          assert keep <= {asset['name'] for asset in release['assets']}
+          output = Path('clean-release-assets')
+          output.mkdir()
+          sums = ''.join(asset['digest'].removeprefix('sha256:') + '  ' + asset['name'] + '\n' for asset in release['assets'] if asset['name'] in keep)
+          (output / 'SHA256SUMS').write_text(sums)
+          subprocess.run(['gh', 'release', 'upload', 'v0.1.0', str(output / 'SHA256SUMS'), '--clobber'], check=True)
+          for asset in release['assets']:
+              if asset['name'] not in keep | {'SHA256SUMS'}:
+                  subprocess.run(['gh', 'api', '--method', 'DELETE', f"repos/{os.environ['GH_REPO']}/releases/assets/{asset['id']}"], check=True)
+          subprocess.run(['gh', 'release', 'edit', 'v0.1.0', '--notes-file', 'release-notes/0.1.0.md', '--latest'], check=True)
+          final = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GH_REPO']}/releases/tags/v0.1.0"]))
+          assert {asset['name'] for asset in final['assets']} == keep | {'SHA256SUMS'}
+          print('Release now contains four application downloads and one checksum file.')
+          PY
