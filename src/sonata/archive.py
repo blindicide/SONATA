@@ -8,6 +8,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+from sonata import __version__
+
 
 def export_collection(records: list[dict], target: Path, progress=lambda *_: None) -> int:
     """Export only registered files, never a recursive directory traversal."""
@@ -38,7 +40,7 @@ def export_collection(records: list[dict], target: Path, progress=lambda *_: Non
     target.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix=".sonata-export-", dir=target.parent)
     os.close(handle)
-    manifest = {"application": "SONATA", "version": "0.1.0", "items": items, "sha256": {}}
+    manifest = {"application": "SONATA", "version": __version__, "items": items, "sha256": {}}
     try:
         with tarfile.open(
             temporary, "w:gz" if target.name.endswith(".gz") else "w", format=tarfile.PAX_FORMAT

@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
-ACTIVE_STATES = ("queued", "resolving", "downloading", "processing")
+ACTIVE_STATES = ("queued", "scanning", "resolving", "downloading", "processing")
 TERMINAL_STATES = ("completed", "failed", "cancelled", "skipped", "expanded")
 DEFAULT_TEMPLATE = "%(title).180B [%(id)s].%(ext)s"
 
@@ -48,8 +48,8 @@ class DownloadOptions:
     destination: str
     collection: str = ""
     mode: str = "video"
-    height: int = 1080  # 0 = best available
-    container: str = "mkv"
+    height: int = 0  # 0 = highest available; otherwise a scanned resolution
+    container: str = "mp4"
     video_codec: str = "any"
     audio_codec: str = "mp3"
     subtitles: bool = False
@@ -69,7 +69,7 @@ class DownloadOptions:
         validate_template(self.template)
         if self.mode not in ("video", "audio"):
             raise ValueError("Unknown download mode.")
-        if self.height not in (0, 4320, 2160, 1440, 1080, 720, 480, 360):
+        if not isinstance(self.height, int) or not 0 <= self.height <= 100_000:
             raise ValueError("Unknown resolution.")
         if self.container not in ("mkv", "mp4", "webm") or self.video_codec not in (
             "any",
@@ -101,9 +101,44 @@ class DownloadOptions:
 def format_selector(options: DownloadOptions) -> str:
     if options.mode == "audio":
         return "bestaudio/best"
-    height = f"[height<=?{options.height}]" if options.height else ""
+    height = f"[height={options.height}]" if options.height else ""
     codec = {"any": "", "h264": "[vcodec^=avc1]", "vp9": "[vcodec^=vp9]", "av1": "[vcodec^=av01]"}[
         options.video_codec
     ]
-    # Keep the resolution / codec constraint on *every* fallback.
-    return f"bestvideo{height}{codec}+bestaudio/best{height}{codec}"
+    video = f"bestvideo{height}{codec}"
+    # MP4 should use native AAC when offered, at the selected video resolution.
+    preferred = (
+        f"{video}+bestaudio[acodec^=mp4a]/{video}+bestaudio[acodec^=aac]/"
+        if options.container == "mp4"
+        else ""
+    )
+    return preferred + f"{video}+bestaudio/best{height}{codec}"
+
+
+def scan_summary(info: dict) -> dict:
+    """Persist format facts without signed stream URLs or authentication headers."""
+    formats = info.get("formats") or [info]
+    resolutions = {}
+    for fmt in formats:
+        if fmt.get("vcodec") == "none" or fmt.get("has_drm") or fmt.get("protocol") == "mhtml":
+            continue
+        height = fmt.get("height")
+        if not isinstance(height, (int, float)) or not 0 < height <= 100_000:
+            continue
+        height = int(height)
+        row = {"height": height, "width": int(fmt.get("width") or 0), "fps": float(fmt.get("fps") or 0)}
+        previous = resolutions.get(height)
+        if previous is None or (row["width"], row["fps"]) > (previous["width"], previous["fps"]):
+            resolutions[height] = row
+    return {
+        "id": info.get("id"),
+        "extractor_key": info.get("extractor_key") or info.get("extractor") or "generic",
+        "title": info.get("title"),
+        "duration": info.get("duration"),
+        "resolutions": [resolutions[h] for h in sorted(resolutions, reverse=True)],
+        "has_video": bool(resolutions)
+        or any(
+            f.get("vcodec") != "none" and f.get("ext") not in ("mp3", "m4a", "opus", "flac", "wav", "ogg")
+            for f in formats
+        ),
+    }

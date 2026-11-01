@@ -8,11 +8,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.0"
+VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
 
 def main():

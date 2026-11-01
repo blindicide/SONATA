@@ -78,7 +78,7 @@ def test_real_download_audio_duplicate_and_export(tmp_path):
         assert download(options) == "completed"
         record = db.history()[0]
         files = json.loads(record["files"])
-        assert any(Path(p).suffix == ".mkv" for p in files)
+        assert any(Path(p).suffix == ".mp4" for p in files)
         assert download(options) == "skipped"
         # Remove the original to exercise an actual audio extraction on the same media ID.
         for filename in files:
@@ -172,7 +172,34 @@ def test_pause_resume_uses_http_byte_ranges(tmp_path):
         engine.start([job])
         wait_for(lambda: db.job(job)["state"] == "completed")
         assert any(start > 0 for start in ranges), "Resume must issue a nonzero byte-range request"
-        assert Path(json.loads(db.history()[0]["files"])[0]).read_bytes() == payload
+        output = Path(json.loads(db.history()[0]["files"])[0])
+
+        def stream_hash(path):
+            result = subprocess.run(
+                [
+                    str(paths.tool("ffmpeg")),
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-map",
+                    "0:v:0",
+                    "-c",
+                    "copy",
+                    "-f",
+                    "hash",
+                    "-hash",
+                    "sha256",
+                    "-",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=30,
+                **spawn_options(),
+            )
+            return result.stdout
+
+        assert stream_hash(output) == stream_hash(media)
     finally:
         engine.shutdown()
         server.shutdown()

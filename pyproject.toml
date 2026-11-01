@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sonata-archiver"
-version = "0.1.0"
+version = "0.1.1"
 description = "SONATA — a local multimedia downloader and archival manager"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -61,7 +61,7 @@ def test_template_cannot_escape_or_collide(template):
 
 def test_constraints_apply_to_fallback(options):
     selector = format_selector(replace(options, height=4320, video_codec="av1"))
-    assert all("height<=?4320" in branch and "vcodec^=av01" in branch for branch in selector.split("/"))
+    assert all("height=4320" in branch and "vcodec^=av01" in branch for branch in selector.split("/"))
     assert format_selector(replace(options, mode="audio")) == "bestaudio/best"
 
 

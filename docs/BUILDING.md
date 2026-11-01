@@ -36,9 +36,13 @@ snapshots and the FFmpeg dependency source cache, and archives developer materia
 as a separate Actions artifact. The public Release contains only the four application
 packages and their SHA256SUMS file. The workflow creates a draft, uploads those five
 assets, and publishes only after those steps succeed.
-The workflow runs on the `release/v0.1.0` branch or by explicit manual dispatch. It refuses
-to replace an already-published release. Review source and notice requirements again when
-changing runtime versions; the Overture manifest is specific to its pinned dependency set.
+That initial workflow runs on `release/v0.1.0` or by explicit manual dispatch. Application
+updates use `publish-update.yml`: a successful push build of `release/v0.1.1` supplies both
+platform artifacts. `prepare_application_release.py` checks their hashes and selects exactly
+four application packages plus SHA256SUMS; extra files are rejected. Publication happens after
+both platforms pass tests and packaging. Published releases are preserved. Runtime dependencies
+are unchanged in 0.1.1. Review source and notice requirements again when changing runtime
+versions; the Overture manifest is specific to its pinned dependency set.
 
 Qt libraries are kept as separate files for replacement. The Python/Qt dependency versions
 are pinned in `pyproject.toml`; runtime tool versions and checksums are in `tools-lock.json`.

@@ -1,5 +1,72 @@
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionProgressBar, QTableWidget
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
+    QComboBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionComboBox,
+    QStyleOptionProgressBar,
+    QTableWidget,
+)
+
+
+def resolution_label(row):
+    return f"{row['height']}p · {row['width']}×{row['height']}" if row.get("width") else f"{row['height']}p"
+
+
+class ResolutionDelegate(QStyledItemDelegate):
+    def __init__(self, parent, on_change):
+        super().__init__(parent)
+        self.on_change = on_change
+
+    def paint(self, painter, option, index):
+        choices = index.data(Qt.ItemDataRole.UserRole)
+        if not choices:
+            return super().paint(painter, option, index)
+        combo = QStyleOptionComboBox()
+        combo.rect = option.rect.adjusted(2, 2, -2, -2)
+        combo.palette = option.palette
+        combo.currentText = index.data() or ""
+        combo.state = option.state
+        if not index.flags() & Qt.ItemFlag.ItemIsEditable:
+            combo.state &= ~QStyle.StateFlag.State_Enabled
+        option.widget.style().drawComplexControl(
+            QStyle.ComplexControl.CC_ComboBox, combo, painter, option.widget
+        )
+        option.widget.style().drawControl(
+            QStyle.ControlElement.CE_ComboBoxLabel, combo, painter, option.widget
+        )
+
+    def editorEvent(self, event, model, option, index):
+        if (
+            event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+            and index.flags() & Qt.ItemFlag.ItemIsEditable
+        ):
+            self.parent().edit(index)
+            return True
+        return super().editorEvent(event, model, option, index)
+
+    def createEditor(self, parent, option, index):
+        editor = QComboBox(parent)
+        for row in index.data(Qt.ItemDataRole.UserRole) or []:
+            editor.addItem(resolution_label(row), row["height"])
+
+        def commit(_index):
+            self.commitData.emit(editor)
+            self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+
+        editor.activated.connect(commit)
+        QTimer.singleShot(0, editor.showPopup)
+        return editor
+
+    def setEditorData(self, editor, index):
+        editor.setCurrentIndex(max(0, editor.findData(index.data(Qt.ItemDataRole.UserRole + 1))))
+
+    def setModelData(self, editor, model, index):
+        height = editor.currentData()
+        if height is not None and self.on_change(index.data(Qt.ItemDataRole.UserRole + 2), height):
+            model.setData(index, editor.currentText())
 
 
 class ProgressDelegate(QStyledItemDelegate):

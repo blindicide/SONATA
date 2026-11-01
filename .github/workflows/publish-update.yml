@@ -1,0 +1,56 @@
+name: Publish application update
+on:
+  workflow_run:
+    workflows: ['Test and build']
+    branches: ['release/v0.1.1']
+    types: [completed]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: sonata-application-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: SONATA-Windows-x64
+          path: release-input/windows
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: SONATA-Linux-x64
+          path: release-input/linux
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Verify packages and publish five download assets
+        run: |
+          VERSION=$(python scripts/prepare_application_release.py)
+          TAG="v$VERSION"
+          NOTES="release-notes/$VERSION.md"
+          if gh release view "$TAG" --json isDraft > existing-release.json 2>/dev/null; then
+            if python -c "import json; raise SystemExit(0 if json.load(open('existing-release.json'))['isDraft'] else 1)"; then
+              echo "Completing the existing draft."
+            else
+              echo "This version is already published; preserving it."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --target "$RELEASE_SHA" --title "SONATA $TAG — Overture" --notes-file "$NOTES" --draft
+          fi
+          gh release upload "$TAG" release-assets/* --clobber
+          gh release edit "$TAG" --draft=false --latest --notes-file "$NOTES"

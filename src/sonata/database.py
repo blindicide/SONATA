@@ -39,8 +39,16 @@ class Database:
                 CREATE TABLE IF NOT EXISTS claims (media_key TEXT PRIMARY KEY, job_id INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state);
-                PRAGMA user_version=1;
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+            for name, definition in {
+                "scan_state": "TEXT NOT NULL DEFAULT 'pending'",
+                "scan": "TEXT NOT NULL DEFAULT '{}'",
+                "auto_start": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+            db.execute("PRAGMA user_version=2")
 
     @contextmanager
     def connect(self):
@@ -56,22 +64,49 @@ class Database:
         # Never restart network traffic automatically after a crash.
         with self._write_lock, self.connect() as db:
             db.execute(
-                "UPDATE jobs SET state='paused',speed=0,eta=NULL WHERE state IN ('resolving','downloading','processing','queued')"
+                "UPDATE jobs SET state='paused',speed=0,eta=NULL,auto_start=0 WHERE state IN ('scanning','resolving','downloading','processing','queued')"
             )
+            db.execute("UPDATE jobs SET scan_state='pending' WHERE scan_state='scanning'")
             db.execute("DELETE FROM claims")
 
-    def add(self, url: str, options: DownloadOptions, title: str = "", parent_id: int | None = None) -> int:
+    def add(
+        self,
+        url: str,
+        options: DownloadOptions,
+        title: str = "",
+        parent_id: int | None = None,
+        auto_start: bool = False,
+    ) -> int:
         url = validate_url(url)
         options.validate()
         with self._write_lock, self.connect() as db:
             cur = db.execute(
-                "INSERT INTO jobs(url,title,options,parent_id,created,updated) VALUES(?,?,?,?,?,?)",
-                (url, title or url, json.dumps(options.to_dict()), parent_id, timestamp(), timestamp()),
+                "INSERT INTO jobs(url,title,options,parent_id,created,updated,auto_start) VALUES(?,?,?,?,?,?,?)",
+                (
+                    url,
+                    title or url,
+                    json.dumps(options.to_dict()),
+                    parent_id,
+                    timestamp(),
+                    timestamp(),
+                    int(auto_start),
+                ),
             )
             return cur.lastrowid
 
     def update(self, job_id: int, **values):
-        allowed = {"title", "state", "progress", "speed", "eta", "error"}
+        allowed = {
+            "title",
+            "state",
+            "progress",
+            "speed",
+            "eta",
+            "error",
+            "scan_state",
+            "scan",
+            "auto_start",
+            "options",
+        }
         if not values or not set(values) <= allowed:
             raise ValueError("Invalid job fields")
         values["updated"] = timestamp()

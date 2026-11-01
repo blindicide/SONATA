@@ -8,10 +8,11 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 from sonata.database import Database
-from sonata.models import DownloadOptions, format_selector, validate_url
+from sonata.models import DownloadOptions, format_selector, scan_summary, validate_url
 from sonata.paths import AppPaths
 
 
@@ -66,7 +67,6 @@ def base_command(paths: AppPaths) -> list[str]:
 def media_identity(info: dict, url: str) -> tuple[str, str]:
     extractor = str(info.get("extractor_key") or info.get("extractor") or "generic").lower()
     if extractor == "generic":
-        # Generic IDs are often just a basename, shared by unrelated servers.
         digest = hashlib.sha256(url.partition("#")[0].encode("utf-8")).hexdigest()
         return f"generic:{digest}", digest[:12]
     return f"{extractor}:{info.get('id') or url}", ""
@@ -105,6 +105,8 @@ def download_command(
         command += ["--extract-audio", "--audio-format", options.audio_codec, "--audio-quality", "0"]
     else:
         command += ["--merge-output-format", options.container, "--remux-video", options.container]
+        if options.container == "mp4" and options.video_codec == "any":
+            command += ["--format-sort", "res,vcodec:h264,acodec:aac"]
     if options.rate_kib:
         command += ["--limit-rate", str(options.rate_kib * 1024)]
     if options.subtitles:
@@ -121,12 +123,14 @@ def download_command(
 class Engine:
     def __init__(self, database: Database, paths: AppPaths, notify=lambda *_: None):
         self.db, self.paths, self.notify = database, paths, notify
-        self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="sonata")
+        self.executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="sonata")
         self.lock = threading.RLock()
         self.running: dict[int, threading.Event] = {}
+        self.phases: dict[int, str] = {}
         self.processes: dict[int, subprocess.Popen] = {}
         self.targets: dict[int, str] = {}
         self.enabled = False
+        self.scans_enabled = True
         self.closed = False
         self.concurrency = int(database.setting("concurrency", 2))
 
@@ -135,45 +139,106 @@ class Engine:
 
     def tick(self):
         with self.lock:
-            if not self.enabled or self.closed:
+            if self.closed:
                 return
-            pending = sorted((j for j in self.db.jobs() if j["state"] == "queued"), key=lambda j: j["id"])
+            pending = sorted(
+                (j for j in self.db.jobs() if j["state"] == "queued" and j["id"] not in self.running),
+                key=lambda j: j["id"],
+            )
+            downloads = sum(phase == "download" for phase in self.phases.values())
+            scans = sum(phase == "scan" for phase in self.phases.values())
             for job in pending:
-                if len(self.running) >= self.concurrency:
-                    break
-                if job["id"] in self.running:
-                    continue
-                self.running[job["id"]] = threading.Event()
-                self.executor.submit(self._run, job)
+                phase = None
+                if (
+                    self.enabled
+                    and job["auto_start"]
+                    and job["scan_state"] == "ready"
+                    and downloads < self.concurrency
+                ):
+                    phase = "download"
+                    downloads += 1
+                elif self.scans_enabled and job["scan_state"] == "pending" and scans < 2:
+                    phase = "scan"
+                    scans += 1
+                if phase:
+                    self.running[job["id"]] = threading.Event()
+                    self.phases[job["id"]] = phase
+                    self.executor.submit(self._scan if phase == "scan" else self._download, job)
+
+    def _descendants(self, job_ids: list[int] | None, jobs: list[dict]) -> set[int]:
+        if job_ids is None:
+            return {j["id"] for j in jobs}
+        selected = set(job_ids)
+        while True:
+            children = {j["id"] for j in jobs if j["parent_id"] in selected}
+            if children <= selected:
+                return selected
+            selected |= children
 
     def start(self, job_ids: list[int] | None = None):
         with self.lock:
-            for job in self.db.jobs():
-                if (job_ids is None or job["id"] in job_ids) and job["state"] in (
-                    "paused",
-                    "failed",
-                    "cancelled",
-                ):
-                    self.db.update(job["id"], state="queued", error="", speed=0, eta=None)
-            self.enabled = True
+            jobs = self.db.jobs()
+            selected = self._descendants(job_ids, jobs)
+            for job in jobs:
+                if job["id"] not in selected or job["state"] == "completed":
+                    continue
+                if job["state"] in ("expanded", "scanning", "downloading", "processing"):
+                    self.db.update(job["id"], auto_start=1)
+                elif job["state"] != "skipped" or job_ids is not None:
+                    self.db.update(
+                        job["id"],
+                        state="queued",
+                        auto_start=1,
+                        error="",
+                        speed=0,
+                        eta=None,
+                        scan_state="pending" if job["scan_state"] == "error" else job["scan_state"],
+                    )
+            self.enabled = self.scans_enabled = True
         self.tick()
 
     def stop(self, job_ids: list[int] | None = None, state: str = "paused"):
         with self.lock:
             if job_ids is None:
-                self.enabled = False
-            for job in self.db.jobs():
+                self.enabled = self.scans_enabled = False
+            jobs = self.db.jobs()
+            selected = self._descendants(job_ids, jobs)
+            for job in jobs:
                 job_id = job["id"]
-                if job_ids is not None and job_id not in job_ids:
+                if job_id not in selected:
                     continue
                 if job_id in self.running:
                     self.targets[job_id] = state
                     self.running[job_id].set()
+                    self.db.update(job_id, state=state, auto_start=0, speed=0, eta=None)
                 elif job["state"] in ("queued", "paused", "failed"):
-                    self.db.update(job_id, state=state, speed=0, eta=None)
-            processes = [p for job_id, p in self.processes.items() if job_ids is None or job_id in job_ids]
+                    self.db.update(job_id, state=state, auto_start=0, speed=0, eta=None)
+                elif job["state"] == "expanded":
+                    self.db.update(job_id, auto_start=0)
+            processes = [p for job_id, p in self.processes.items() if job_id in selected]
         for process in processes:
             stop_process(process)
+
+    def rescan(self, job_ids: list[int]):
+        with self.lock:
+            for job_id in job_ids:
+                job = self.db.job(job_id)
+                if job_id in self.running or job["state"] == "completed":
+                    continue
+                self.db.update(job_id, state="queued", scan_state="pending", auto_start=0, error="")
+            self.scans_enabled = True
+        self.tick()
+
+    def set_resolution(self, job_id: int, height: int):
+        with self.lock:
+            job = self.db.job(job_id)
+            if job_id in self.running or job["state"] not in ("queued", "paused", "failed"):
+                raise ValueError("Pause the transfer before changing its resolution.")
+            info = json.loads(job["scan"])
+            if height not in {row["height"] for row in info.get("resolutions", [])}:
+                raise ValueError("Choose a resolution offered by this video.")
+            options = replace(DownloadOptions(**json.loads(job["options"])), height=height).validate()
+            self.db.update(job_id, options=json.dumps(options.to_dict()))
 
     def shutdown(self):
         self.closed = True
@@ -212,7 +277,7 @@ class Engine:
             code = process.wait()
             self._check(job_id)
             if code:
-                raise RuntimeError("\n".join(tail)[-4000:] or f"yt-dlp exited with code {code}")
+                raise RuntimeError("\n".join(tail)[-4000:] or f"Process exited with code {code}")
         finally:
             stop_process(process)
             process.wait()
@@ -220,17 +285,36 @@ class Engine:
             with self.lock:
                 self.processes.pop(job_id, None)
 
-    def _run(self, job: dict):
+    def _finish(self, job_id: int, error: Exception | None = None):
+        if isinstance(error, Stopped):
+            values = {"state": self.targets.get(job_id, "paused"), "speed": 0, "eta": None}
+            if self.phases.get(job_id) == "scan":
+                values["scan_state"] = "pending"
+            self.db.update(job_id, **values)
+        elif error is not None:
+            values = {"state": "failed", "error": str(error)[-4000:], "speed": 0, "eta": None}
+            if self.phases.get(job_id) == "scan":
+                values["scan_state"] = "error"
+            self.db.update(job_id, **values)
+            self.log(job_id, str(error))
+        self.db.release(job_id)
+        with self.lock:
+            self.running.pop(job_id, None)
+            self.phases.pop(job_id, None)
+            self.targets.pop(job_id, None)
+        self.notify("changed", job_id)
+
+    def _scan(self, job: dict):
         job_id = job["id"]
+        error = None
         try:
             options = DownloadOptions(**json.loads(job["options"])).validate()
-            options.folder.mkdir(parents=True, exist_ok=True)
-            self.db.update(job_id, state="resolving", error="", speed=0, eta=None)
-            info_lines = []
+            self.db.update(job_id, state="scanning", scan_state="scanning", error="", speed=0, eta=None)
+            lines = []
 
-            def inspect_line(line):
+            def on_line(line):
                 if line.startswith("{"):
-                    info_lines.append(line)
+                    lines.append(line)
                 else:
                     self.log(job_id, line)
 
@@ -243,10 +327,10 @@ class Engine:
             ]
             if not options.playlist:
                 command += ["--no-playlist"]
-            self._stream(job_id, command + ["--", job["url"]], inspect_line)
-            if not info_lines:
+            self._stream(job_id, command + ["--", job["url"]], on_line)
+            if not lines:
                 raise RuntimeError("The extractor returned no media information.")
-            info = json.loads(info_lines[-1])
+            info = json.loads(lines[-1])
             title = str(info.get("title") or job["url"])
             self.db.update(job_id, title=title)
             if info.get("entries") is not None:
@@ -255,8 +339,45 @@ class Engine:
                 count = self._expand(job_id, info, options, job["url"])
                 if not count:
                     raise ValueError("The playlist contains no downloadable entries.")
-                self.db.update(job_id, state="expanded", progress=100, error=f"{count} entries")
+                with self.lock:
+                    self._check(job_id)
+                    self.db.update(
+                        job_id, state="expanded", scan_state="ready", progress=100, error=f"{count} entries"
+                    )
                 return
+            summary = scan_summary(info)
+            heights = [row["height"] for row in summary["resolutions"]]
+            if heights and options.mode == "video":
+                height = (
+                    options.height
+                    if options.height in heights
+                    else max(
+                        (h for h in heights if not options.height or h <= options.height),
+                        default=max(heights),
+                    )
+                )
+                options = replace(options, height=height)
+            with self.lock:
+                self._check(job_id)
+                self.db.update(
+                    job_id,
+                    state="queued",
+                    scan_state="ready",
+                    scan=json.dumps(summary),
+                    options=json.dumps(options.to_dict()),
+                )
+        except Exception as exc:
+            error = exc
+        finally:
+            self._finish(job_id, error)
+
+    def _download(self, job: dict):
+        job_id = job["id"]
+        error = None
+        try:
+            options = DownloadOptions(**json.loads(job["options"])).validate()
+            options.folder.mkdir(parents=True, exist_ok=True)
+            info = json.loads(job["scan"])
             media_key, filename_tag = media_identity(info, job["url"])
             if not self.db.claim(media_key, job_id):
                 self.db.update(
@@ -264,17 +385,18 @@ class Engine:
                 )
                 return
             self._check(job_id)
-            self.db.update(job_id, state="downloading", progress=0)
+            self.db.update(job_id, state="downloading", progress=0, error="")
             files = []
 
             def progress_line(line):
                 if line.startswith("SONATA_PROGRESS:"):
                     progress = json.loads(line.partition(":")[2])
                     total = progress.get("total_bytes") or progress.get("total_bytes_estimate") or 0
-                    done = progress.get("downloaded_bytes") or 0
                     self.db.update(
                         job_id,
-                        progress=min(99.9, done / total * 100) if total else 0,
+                        progress=min(99.9, (progress.get("downloaded_bytes") or 0) / total * 100)
+                        if total
+                        else 0,
                         speed=progress.get("speed") or 0,
                         eta=progress.get("eta"),
                         state="processing" if progress.get("status") == "finished" else "downloading",
@@ -291,7 +413,17 @@ class Engine:
                 job_id, download_command(self.paths, job["url"], options, filename_tag), progress_line
             )
             self._check(job_id)
-            # Include written metadata, subtitles and thumbnails beside the final media.
+            if options.mode == "video" and options.container == "mp4":
+                from sonata.media import finish_download_mp4
+
+                self.db.update(job_id, state="processing", speed=0, eta=None)
+                for path in files:
+                    finish_download_mp4(
+                        self.paths,
+                        path,
+                        lambda command, callback: self._stream(job_id, command, callback),
+                        lambda line: self.log(job_id, line),
+                    )
             sidecars = []
             for path in files:
                 for candidate in path.parent.glob(path.stem.replace("[", "[[]") + ".*"):
@@ -306,25 +438,19 @@ class Engine:
                         ".webp",
                     }:
                         sidecars.append(candidate)
+            self._check(job_id)
             self.db.complete(
                 job_id,
                 media_key,
-                title,
+                job["title"],
                 list(dict.fromkeys(files + sidecars)),
                 options.folder,
                 options.collection,
             )
-        except Stopped:
-            self.db.update(job_id, state=self.targets.get(job_id, "paused"), speed=0, eta=None)
         except Exception as exc:
-            self.db.update(job_id, state="failed", error=str(exc)[-4000:], speed=0, eta=None)
-            self.log(job_id, str(exc))
+            error = exc
         finally:
-            self.db.release(job_id)
-            with self.lock:
-                self.running.pop(job_id, None)
-                self.targets.pop(job_id, None)
-            self.notify("changed", job_id)
+            self._finish(job_id, error)
 
     def _expand(self, job_id: int, info: dict, options: DownloadOptions, source: str) -> int:
         count = 0
@@ -350,10 +476,17 @@ class Engine:
             if url and url != source and url not in seen:
                 validate_url(url)
                 seen.add(url)
-                # Survive pause/retry during a large expansion without duplicating rows.
-                if url not in existing:
-                    self.db.add(url, options, str(entry.get("title") or url), parent_id=job_id)
-                    existing.add(url)
+                with self.lock:
+                    self._check(job_id)
+                    if url not in existing:
+                        self.db.add(
+                            url,
+                            options,
+                            str(entry.get("title") or url),
+                            parent_id=job_id,
+                            auto_start=bool(self.db.job(job_id)["auto_start"]),
+                        )
+                        existing.add(url)
                 count += 1
 
         visit(info)

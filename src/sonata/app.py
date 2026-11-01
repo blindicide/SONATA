@@ -8,6 +8,7 @@ from PySide6.QtCore import QLockFile
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from sonata import __version__
 from sonata.paths import AppPaths
 from sonata.window import MainWindow
 
@@ -19,7 +20,7 @@ def main() -> int:
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("SONATA")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion(__version__)
     app.setOrganizationName("SONATA")
     app.setFont(QFont("Segoe UI" if sys.platform == "win32" else "DejaVu Sans", 9))
     paths = AppPaths.discover(args.portable, args.data_dir)

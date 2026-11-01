@@ -1,4 +1,4 @@
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 [Setup]
 AppId={{27307A67-6524-4A3F-A570-A1F93A476277}
 AppName=SONATA

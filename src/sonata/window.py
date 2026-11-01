@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QPolygon
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
@@ -40,7 +41,7 @@ from sonata.paths import AppPaths
 from sonata.preferences import Preferences, combo
 from sonata.theme import apply_theme
 from sonata.updates import update_downloader
-from sonata.widgets import ProgressDelegate, eta_text, size_text, table
+from sonata.widgets import ProgressDelegate, ResolutionDelegate, eta_text, resolution_label, size_text, table
 
 
 class Bridge(QObject):
@@ -83,15 +84,19 @@ class MainWindow(QMainWindow):
         self.paths = paths
         self.db = Database(paths.data / "library.db")
         self.db.recover()
-        self.options = DownloadOptions(
-            **self.db.setting("download_options", {"destination": str(Path.home() / "Downloads/SONATA")})
-        )
+        saved = self.db.setting("download_options", {"destination": str(Path.home() / "Downloads/SONATA")})
+        if self.db.setting("defaults_revision", 0) < 2:
+            saved.update(container="mp4", height=0)
+            self.db.save_setting("download_options", saved)
+            self.db.save_setting("defaults_revision", 2)
+        self.options = DownloadOptions(**saved)
         self.bridge = Bridge(self)
         self.bridge.event.connect(self.on_event)
         self.bridge.result.connect(self.on_result)
         self.engine = Engine(self.db, paths, self.bridge.event.emit)
         self.busy = False
         self.maintenance = None
+        self.media_window = None
         self.log_lines = []
         self.last_library = None
         self.setWindowIcon(app_icon())
@@ -159,6 +164,8 @@ class MainWindow(QMainWindow):
         menus["File"].addSeparator()
         menus["File"].addAction(tr("Exit"), self.close, "Alt+F4")
         menus["Tools"].addSeparator()
+        menus["Tools"].addAction(tr("FFmpeg tools…"), self.open_media_tools, "Ctrl+M")
+        menus["Transfers"].addAction(tr("Scan formats"), lambda: self.engine.rescan(self.selected_jobs()))
         menus["Tools"].addAction(tr("Update yt-dlp"), self.update_tool)
         menus["Tools"].addAction(tr("Reset yt-dlp update"), self.reset_tool)
         menus["File"].addAction(tr("Save activity log…"), self.save_log)
@@ -181,19 +188,11 @@ class MainWindow(QMainWindow):
         root.addLayout(source)
         formats = QHBoxLayout()
         self.mode = combo([(tr("Video"), "video"), (tr("Audio only"), "audio")], self.options.mode)
-        self.resolution = combo(
-            [(tr("Best available"), 0)]
-            + [
-                (f"{h}p" + (" / 8K" if h == 4320 else ""), h) for h in (4320, 2160, 1440, 1080, 720, 480, 360)
-            ],
-            self.options.height,
-        )
-        self.container = combo([(x.upper(), x) for x in ("mkv", "mp4", "webm")], self.options.container)
+        self.container = combo([(x.upper(), x) for x in ("mp4", "mkv", "webm")], self.options.container)
         self.collection = QLineEdit(self.options.collection)
         self.collection.setPlaceholderText(tr("Unsorted"))
         for label, control in [
             ("Mode", self.mode),
-            ("Resolution", self.resolution),
             ("Container", self.container),
             ("Collection", self.collection),
         ]:
@@ -202,20 +201,42 @@ class MainWindow(QMainWindow):
         self.mode.currentIndexChanged.connect(self.mode_changed)
         self.mode_changed()
         root.addLayout(formats)
+        scan_hint = QLabel(
+            tr("Available resolutions are scanned for each video. Highest quality is selected automatically.")
+        )
+        root.addWidget(scan_hint)
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
         queue_page = QWidget()
         queue_layout = QVBoxLayout(queue_page)
         queue_layout.setContentsMargins(0, 5, 0, 0)
         self.queue = table(
-            [tr(x) for x in ("Title / Source", "State", "Progress", "Speed", "ETA", "Collection", "Added")]
+            [
+                tr(x)
+                for x in (
+                    "Title / Source",
+                    "State",
+                    "Resolution",
+                    "Progress",
+                    "Speed",
+                    "ETA",
+                    "Collection",
+                    "Added",
+                )
+            ]
         )
-        self.queue.setItemDelegateForColumn(2, ProgressDelegate(self.queue))
-        for col, width in enumerate((350, 105, 150, 100, 75, 115, 145)):
+        self.queue.setEditTriggers(
+            QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.queue.setItemDelegateForColumn(2, ResolutionDelegate(self.queue, self.set_resolution))
+        self.queue.setItemDelegateForColumn(3, ProgressDelegate(self.queue))
+        for col, width in enumerate((300, 95, 165, 125, 90, 65, 100, 140)):
             self.queue.setColumnWidth(col, width)
         self.queue.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.queue.itemSelectionChanged.connect(self.details)
-        self.queue.sortItems(6, Qt.SortOrder.DescendingOrder)
+        self.queue.sortItems(7, Qt.SortOrder.DescendingOrder)
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
         self.detail.setMaximumBlockCount(300)
@@ -283,7 +304,6 @@ class MainWindow(QMainWindow):
 
     def mode_changed(self):
         video = self.mode.currentData() == "video"
-        self.resolution.setEnabled(video)
         self.container.setEnabled(video)
 
     def current_options(self):
@@ -292,7 +312,7 @@ class MainWindow(QMainWindow):
             destination=self.destination.text().strip(),
             collection=self.collection.text().strip(),
             mode=self.mode.currentData(),
-            height=self.resolution.currentData(),
+            height=0,
             container=self.container.currentData(),
         ).validate()
 
@@ -314,6 +334,7 @@ class MainWindow(QMainWindow):
             urls = list(dict.fromkeys(validate_url(url) for url in sources))
             for url in urls:
                 self.db.add(url, options)
+            self.engine.scans_enabled = True
             self.options = options
             self.db.save_setting("download_options", options.to_dict())
             self.url.clear()
@@ -333,6 +354,36 @@ class MainWindow(QMainWindow):
         if not self.busy:
             self.engine.start(self.selected_jobs() or None)
             self.refresh()
+
+    def set_resolution(self, job_id, height):
+        try:
+            self.engine.set_resolution(job_id, height)
+            return True
+        except ValueError as exc:
+            QMessageBox.warning(self, self.tr("Error"), str(exc))
+            return False
+
+    def open_media_tools(self):
+        from sonata.media_window import MediaTools
+
+        if (
+            self.media_window is not None
+            and self.media_window.language != self.db.setting("language", "en")
+            and not self.media_window.busy
+        ):
+            self.media_window.close()
+            self.media_window.deleteLater()
+            self.media_window = None
+        if self.media_window is None:
+            self.media_window = MediaTools(self)
+        if self.tabs.currentIndex() == 1 and self.library.selectionModel().selectedRows():
+            row = self.library.selectionModel().selectedRows()[0].row()
+            filename = self.library.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            if filename:
+                self.media_window.set_source(filename)
+        self.media_window.show()
+        self.media_window.raise_()
+        self.media_window.activateWindow()
 
     def clear_finished(self):
         self.db.clear_finished()
@@ -379,6 +430,8 @@ class MainWindow(QMainWindow):
         )
 
     def refresh(self):
+        if self.queue.state() == QAbstractItemView.State.EditingState:
+            return
         self.engine.tick()
         jobs = self.db.jobs()
         selected = set(self.selected_jobs())
@@ -387,9 +440,24 @@ class MainWindow(QMainWindow):
         self.queue.setRowCount(len(jobs))
         for row, job in enumerate(jobs):
             options = json.loads(job["options"])
+            scan = json.loads(job["scan"])
+            choices = scan.get("resolutions", []) if options["mode"] == "video" else []
+            selected_resolution = next((r for r in choices if r["height"] == options["height"]), None)
+            quality = (
+                resolution_label(selected_resolution)
+                if selected_resolution
+                else self.tr(
+                    "Audio only"
+                    if options["mode"] == "audio" or scan.get("has_video") is False
+                    else "Best available"
+                    if job["scan_state"] == "ready"
+                    else "Scanning…"
+                )
+            )
             values = [
                 job["title"],
                 self.tr(job["state"]),
+                quality,
                 f"{job['progress']:.1f}%",
                 size_text(job["speed"]) + "/s" if job["speed"] else "—",
                 eta_text(job["eta"]),
@@ -405,14 +473,29 @@ class MainWindow(QMainWindow):
                     item.setText(value)
                 item.setToolTip(job["error"] or job["url"])
                 item.sort_value = {
-                    2: job["progress"],
-                    3: job["speed"],
-                    4: job["eta"] if job["eta"] is not None else -1,
+                    2: options["height"],
+                    3: job["progress"],
+                    4: job["speed"],
+                    5: job["eta"] if job["eta"] is not None else -1,
                 }.get(column, value.casefold())
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, job["id"])
                 elif column == 2:
+                    item.setData(Qt.ItemDataRole.UserRole, choices)
+                    item.setData(Qt.ItemDataRole.UserRole + 1, options["height"])
+                    item.setData(Qt.ItemDataRole.UserRole + 2, job["id"])
+                    flags = item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                    if (
+                        choices
+                        and job["id"] not in self.engine.running
+                        and job["state"] in ("queued", "paused", "failed")
+                    ):
+                        flags |= Qt.ItemFlag.ItemIsEditable
+                    item.setFlags(flags)
+                elif column == 3:
                     item.setData(Qt.ItemDataRole.UserRole, job["progress"])
+                if column != 2:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 if column == 1:
                     item.setForeground(
                         QColor("#d85858") if job["state"] == "failed" else self.palette().text().color()
@@ -596,6 +679,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.media_window is not None and not self.media_window.close():
+            event.ignore()
+            return
         if self.busy:
             QMessageBox.information(self, self.tr("Working…"), self.tr("Working…"))
             event.ignore()
