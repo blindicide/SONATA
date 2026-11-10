@@ -8,7 +8,7 @@ version = "0.1.1"
 description = "SONATA — a local multimedia downloader and archival manager"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "GPL-3.0-or-later"
+license = "LicenseRef-Proprietary"
 authors = [{name = "SONATA contributors"}]
 dependencies = ["PySide6-Essentials==6.8.3"]
 classifiers = ["Development Status :: 3 - Alpha", "Environment :: X11 Applications :: Qt", "Operating System :: Microsoft :: Windows :: Windows 10", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3"]
